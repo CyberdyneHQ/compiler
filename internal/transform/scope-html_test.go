@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -70,6 +69,21 @@ func TestScopeHTML(t *testing.T) {
 			source: "<Component {className} />",
 			want:   `<Component className={className + " astro-XXXXXX"}></Component>`,
 		},
+		{
+			name:   "element class:list",
+			source: "<div class:list={{ a: true }} />",
+			want:   `<div class:list={[({ a: true }), "astro-XXXXXX"]}></div>`,
+		},
+		{
+			name:   "element class:list string",
+			source: "<div class:list=\"weird but ok\" />",
+			want:   `<div class:list="weird but ok astro-XXXXXX"></div>`,
+		},
+		{
+			name:   "component class:list",
+			source: "<Component class:list={{ a: true }} />",
+			want:   `<Component class:list={[({ a: true }), "astro-XXXXXX"]}></Component>`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,7 +96,7 @@ func TestScopeHTML(t *testing.T) {
 			astro.PrintToSource(&b, nodes[0])
 			got := b.String()
 			if tt.want != got {
-				t.Error(fmt.Sprintf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got))
+				t.Errorf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got)
 			}
 		})
 	}

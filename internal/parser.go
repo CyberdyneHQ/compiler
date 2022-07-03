@@ -365,6 +365,7 @@ func (p *parser) addFrontmatter(empty bool) {
 		}
 		if empty {
 			p.frontmatterState = FrontmatterClosed
+			p.fm.Attr = append(p.fm.Attr, Attribute{Key: ImplicitNodeMarker, Type: EmptyAttribute})
 		} else {
 			p.frontmatterState = FrontmatterOpen
 			p.oe = append(p.oe, p.fm)
@@ -388,6 +389,10 @@ func (p *parser) addExpression() {
 
 func isFragment(data string) bool {
 	return len(data) == 0 || data == "Fragment"
+}
+
+func isSlot(data string) bool {
+	return data == "slot"
 }
 
 func isComponent(data string) bool {
@@ -619,7 +624,6 @@ func initialIM(p *parser) bool {
 			// It was all whitespace, so ignore it.
 			return true
 		}
-		p.addText(p.tok.Data)
 	case CommentToken:
 		p.doc.AppendChild(&Node{
 			Type: CommentNode,
@@ -749,6 +753,9 @@ func inHeadIM(p *parser) bool {
 				return true
 			}
 			p.tok.Data = s
+		} else if p.oe.top() != nil && (isComponent(p.oe.top().Data) || isFragment((p.oe.top().Data))) {
+			p.addText(p.tok.Data)
+			return true
 		}
 	case StartTagToken:
 		// Allow components in Head
@@ -768,6 +775,14 @@ func inHeadIM(p *parser) bool {
 			p.addElement()
 			p.oe.pop()
 			p.acknowledgeSelfClosingTag()
+			return true
+		case a.Slot:
+			p.addElement()
+			if p.hasSelfClosingToken {
+				p.addLoc()
+				p.oe.pop()
+				p.acknowledgeSelfClosingTag()
+			}
 			return true
 		case a.Noscript:
 			if p.scripting {
@@ -829,9 +844,11 @@ func inHeadIM(p *parser) bool {
 			return true
 		}
 
-		if p.oe.top() != nil && (isComponent(p.oe.top().Data) || isFragment((p.oe.top().Data))) {
+		if p.oe.top() != nil && (isSlot(p.oe.top().Data) || isComponent(p.oe.top().Data) || isFragment((p.oe.top().Data))) {
 			p.addElement()
-			p.setOriginalIM()
+			if p.originalIM == nil {
+				p.setOriginalIM()
+			}
 			p.im = inBodyIM
 			if p.hasSelfClosingToken {
 				p.addLoc()
@@ -894,7 +911,9 @@ func inHeadIM(p *parser) bool {
 	case StartExpressionToken:
 		p.addExpression()
 		p.afe = append(p.afe, &scopeMarker)
-		p.setOriginalIM()
+		if p.originalIM == nil {
+			p.setOriginalIM()
+		}
 		p.im = inExpressionIM
 		return true
 	case EndExpressionToken:
@@ -1205,9 +1224,19 @@ func inBodyIM(p *parser) bool {
 			}
 			p.reconstructActiveFormattingElements()
 			p.addFormattingElement()
+			if p.hasSelfClosingToken {
+				p.afe.pop()
+				p.oe.pop()
+				p.acknowledgeSelfClosingTag()
+			}
 		case a.B, a.Big, a.Code, a.Em, a.Font, a.I, a.S, a.Small, a.Strike, a.Strong, a.Tt, a.U:
 			p.reconstructActiveFormattingElements()
 			p.addFormattingElement()
+			if p.hasSelfClosingToken {
+				p.afe.pop()
+				p.oe.pop()
+				p.acknowledgeSelfClosingTag()
+			}
 		case a.Nobr:
 			p.reconstructActiveFormattingElements()
 			if p.elementInScope(defaultScope, a.Nobr) {
@@ -1215,6 +1244,11 @@ func inBodyIM(p *parser) bool {
 				p.reconstructActiveFormattingElements()
 			}
 			p.addFormattingElement()
+			if p.hasSelfClosingToken {
+				p.afe.pop()
+				p.oe.pop()
+				p.acknowledgeSelfClosingTag()
+			}
 		case a.Applet, a.Marquee, a.Object:
 			p.reconstructActiveFormattingElements()
 			p.addElement()
@@ -1337,8 +1371,6 @@ func inBodyIM(p *parser) bool {
 				p.im = inHeadIM
 				return true
 			}
-		case a.Caption, a.Col, a.Colgroup, a.Frame, a.Tbody, a.Td, a.Tfoot, a.Th, a.Thead, a.Tr:
-			// Ignore the token.
 		default:
 			p.reconstructActiveFormattingElements()
 			p.addElement()
@@ -1843,6 +1875,15 @@ func inCaptionIM(p *parser) bool {
 			// Ignore the token.
 			return true
 		}
+	case StartExpressionToken:
+		p.addExpression()
+		p.afe = append(p.afe, &scopeMarker)
+		p.originalIM = inBodyIM
+		p.im = inExpressionIM
+		return true
+	case EndExpressionToken:
+		p.oe.pop()
+		return true
 	}
 	return inBodyIM(p)
 }
@@ -1898,6 +1939,15 @@ func inColumnGroupIM(p *parser) bool {
 		}
 	case ErrorToken:
 		return inBodyIM(p)
+	case StartExpressionToken:
+		p.addExpression()
+		p.afe = append(p.afe, &scopeMarker)
+		p.originalIM = inTableIM
+		p.im = inExpressionIM
+		return true
+	case EndExpressionToken:
+		p.oe.pop()
+		return true
 	}
 	if p.oe.top().DataAtom != a.Colgroup {
 		return true
@@ -1958,6 +2008,8 @@ func inTableBodyIM(p *parser) bool {
 	case StartExpressionToken:
 		p.addExpression()
 		p.afe = append(p.afe, &scopeMarker)
+		p.originalIM = inTableIM
+		p.im = inExpressionIM
 		return true
 	case EndExpressionToken:
 		p.oe.pop()
@@ -2016,12 +2068,13 @@ func inRowIM(p *parser) bool {
 	case StartExpressionToken:
 		p.addExpression()
 		p.afe = append(p.afe, &scopeMarker)
+		p.originalIM = inTableIM
+		p.im = inExpressionIM
 		return true
 	case EndExpressionToken:
 		p.oe.pop()
 		return true
 	}
-
 	return inTableIM(p)
 }
 
@@ -2031,6 +2084,8 @@ func inCellIM(p *parser) bool {
 	case StartExpressionToken:
 		p.addExpression()
 		p.afe = append(p.afe, &scopeMarker)
+		p.originalIM = inBodyIM
+		p.im = inExpressionIM
 		return true
 	case EndExpressionToken:
 		p.oe.pop()
@@ -2128,6 +2183,8 @@ func inSelectIM(p *parser) bool {
 			p.tokenizer.NextIsNotRawText()
 			// Ignore the token.
 			return true
+		default:
+			return inBodyIM(p)
 		}
 	case EndTagToken:
 		switch p.tok.DataAtom {
@@ -2161,13 +2218,13 @@ func inSelectIM(p *parser) bool {
 	case StartExpressionToken:
 		p.addExpression()
 		p.afe = append(p.afe, &scopeMarker)
-		p.setOriginalIM()
+		p.originalIM = inBodyIM
 		p.im = inExpressionIM
 		return true
 	case EndExpressionToken:
 		p.addLoc()
 		p.oe.pop()
-		return true
+		return inBodyIM(p)
 	case DoctypeToken:
 		// Ignore the token.
 		return true
@@ -2748,7 +2805,7 @@ func (p *parser) parseCurrentToken() {
 		if p.inForeignContent() {
 			consumed = parseForeignContent(p)
 		} else {
-			if p.im == nil && p.context != nil {
+			if p.im == nil {
 				p.im = inBodyIM
 			}
 			consumed = p.im(p)

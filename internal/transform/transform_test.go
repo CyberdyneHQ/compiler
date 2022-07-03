@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -25,7 +24,7 @@ func TestTransformScoping(t *testing.T) {
 		{
 			name: "global empty",
 			source: `
-				<style global>div { color: red }</style>
+				<style is:global>div { color: red }</style>
 				<div />
 			`,
 			want: `<div></div>`,
@@ -33,7 +32,7 @@ func TestTransformScoping(t *testing.T) {
 		{
 			name: "global true",
 			source: `
-				<style global={true}>div { color: red }</style>
+				<style is:global={true}>div { color: red }</style>
 				<div />
 			`,
 			want: `<div></div>`,
@@ -41,7 +40,7 @@ func TestTransformScoping(t *testing.T) {
 		{
 			name: "global string",
 			source: `
-				<style global="">div { color: red }</style>
+				<style is:global="">div { color: red }</style>
 				<div />
 			`,
 			want: `<div></div>`,
@@ -49,7 +48,7 @@ func TestTransformScoping(t *testing.T) {
 		{
 			name: "global string true",
 			source: `
-				<style global="true">div { color: red }</style>
+				<style is:global="true">div { color: red }</style>
 				<div />
 			`,
 			want: `<div></div>`,
@@ -66,8 +65,8 @@ func TestTransformScoping(t *testing.T) {
 		{
 			name: "global multiple",
 			source: `
-				<style global>div { color: red }</style>
-				<style global>div { color: green }</style>
+				<style is:global>div { color: red }</style>
+				<style is:global>div { color: green }</style>
 				<div />
 			`,
 			want: `<div></div>`,
@@ -76,7 +75,7 @@ func TestTransformScoping(t *testing.T) {
 			name: "mixed multiple",
 			source: `
 				<style>div { color: red }</style>
-				<style global>div { color: green }</style>
+				<style is:global>div { color: green }</style>
 				<div />
 			`,
 			want: `<div class="astro-XXXXXX"></div>`,
@@ -89,6 +88,14 @@ func TestTransformScoping(t *testing.T) {
 				<div />
 			`,
 			want: `<div class="astro-XXXXXX"></div>`,
+		},
+		{
+			name: "inline does not scope",
+			source: `
+				<style is:inline>div{}</style>
+				<div />
+			`,
+			want: `<div></div>`,
 		},
 	}
 	var b strings.Builder
@@ -104,7 +111,7 @@ func TestTransformScoping(t *testing.T) {
 			astro.PrintToSource(&b, doc.LastChild.FirstChild.NextSibling.FirstChild)
 			got := b.String()
 			if tt.want != got {
-				t.Error(fmt.Sprintf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got))
+				t.Errorf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got)
 			}
 		})
 	}
@@ -142,12 +149,12 @@ func TestFullTransform(t *testing.T) {
 		{
 			name:   "respects explicitly authored elements 2",
 			source: `<head></head><Component />`,
-			want:   `<html><head></head><Component></Component></html>`,
+			want:   `<head></head><Component></Component>`,
 		},
 		{
 			name:   "respects explicitly authored elements 3",
 			source: `<body><Component /></body>`,
-			want:   `<html><head></head><body><Component></Component></body></html>`,
+			want:   `<body><Component></Component></body>`,
 		},
 		{
 			name:   "removes implicitly generated elements",
@@ -165,10 +172,10 @@ func TestFullTransform(t *testing.T) {
 <span />
 <Component />
 <span />`,
-			want: `<html><head><title>Title</title>
-</head><body><span></span>
+			want: `<title>Title</title>
+<span></span>
 <Component></Component>
-<span></span></body></html>`,
+<span></span>`,
 		},
 	}
 	var b strings.Builder
@@ -186,7 +193,55 @@ func TestFullTransform(t *testing.T) {
 			astro.PrintToSource(&b, doc)
 			got := strings.TrimSpace(b.String())
 			if tt.want != got {
-				t.Error(fmt.Sprintf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got))
+				t.Errorf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestTransformTrailingSpace(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "component with trailing space",
+			source: "<h1>Hello world</h1>\n\n\t ",
+			want:   `<h1>Hello world</h1>`,
+		},
+		{
+			name:   "component with no trailing space",
+			source: "<h1>Hello world</h1>",
+			want:   "<h1>Hello world</h1>",
+		},
+		{
+			name:   "component with leading and trailing space",
+			source: "<span/>\n\n\t <h1>Hello world</h1>\n\n\t ",
+			want:   "<span></span>\n\n\t <h1>Hello world</h1>",
+		},
+		{
+			name:   "html with explicit space",
+			source: "<html><body>\n\n\n</body></html>",
+			want:   "<html><body>\n\n\n</body></html>",
+		},
+	}
+	var b strings.Builder
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b.Reset()
+			doc, err := astro.Parse(strings.NewReader(tt.source))
+			if err != nil {
+				t.Error(err)
+			}
+			ExtractStyles(doc)
+			// Clear doc.Styles to avoid scoping behavior, we're not testing that here
+			doc.Styles = make([]*astro.Node, 0)
+			Transform(doc, TransformOptions{})
+			astro.PrintToSource(&b, doc)
+			got := b.String()
+			if tt.want != got {
+				t.Errorf("\nFAIL: %s\n  want: %s\n  got:  %s", tt.name, tt.want, got)
 			}
 		})
 	}

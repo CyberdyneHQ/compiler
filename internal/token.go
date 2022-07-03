@@ -67,6 +67,24 @@ const (
 // AttributeType is the type of an Attribute
 type AttributeType uint32
 
+func (t AttributeType) String() string {
+	switch t {
+	case QuotedAttribute:
+		return "quoted"
+	case EmptyAttribute:
+		return "empty"
+	case ExpressionAttribute:
+		return "expression"
+	case SpreadAttribute:
+		return "spread"
+	case ShorthandAttribute:
+		return "shorthand"
+	case TemplateLiteralAttribute:
+		return "template-literal"
+	}
+	return "Invalid(" + strconv.Itoa(int(t)) + ")"
+}
+
 const (
 	QuotedAttribute AttributeType = iota
 	EmptyAttribute
@@ -252,11 +270,12 @@ type Tokenizer struct {
 	// pendingAttr is the attribute key and value currently being tokenized.
 	// When complete, pendingAttr is pushed onto attr. nAttrReturned is
 	// incremented on each call to TagAttr.
-	pendingAttr         [2]loc.Span
-	pendingAttrType     AttributeType
-	attr                [][2]loc.Span
-	attrTypes           []AttributeType
-	attrExpressionStack int
+	pendingAttr              [2]loc.Span
+	pendingAttrType          AttributeType
+	attr                     [][2]loc.Span
+	attrTypes                []AttributeType
+	attrExpressionStack      int
+	attrTemplateLiteralStack []int
 
 	nAttrReturned int
 	dashCount     int
@@ -269,6 +288,10 @@ type Tokenizer struct {
 	// token: one that treats "<p>" as text instead of an element.
 	// rawTag's contents are lower-cased.
 	rawTag string
+	// noExpressionTag is the "math" in "<math>". If non-empty, any instances
+	// of "{" will be treated as raw text rather than an StartExpressionToken.
+	// noExpressionTag's contents are lower-cased.
+	noExpressionTag string
 	// stringStartChar is the character that opened the last string: ', ", or `
 	// stringStartChar byte
 	// stringIsOpen will be true while in the context of a string
@@ -386,12 +409,14 @@ func (z *Tokenizer) readRawOrRCDATA() {
 	if z.Token().Type == SelfClosingTagToken {
 		z.data.End = z.raw.End
 		z.rawTag = ""
+		z.noExpressionTag = ""
 		return
 	}
 	if z.rawTag == "script" {
 		z.readScript()
 		z.textIsRaw = true
 		z.rawTag = ""
+		z.noExpressionTag = ""
 		return
 	}
 loop:
@@ -755,7 +780,8 @@ func (z *Tokenizer) readString(c byte) {
 	// template literal
 	case '`':
 		// Note that we DO NOT have to handle `${}` here because our expression
-		// behavior already handles `{}`. Technically incorrect, but it works.
+		// behavior already handles `{}` and `z.readTagAttrExpression()` handles
+		// template literals seperately.
 		z.readUntilChar([]byte{'`'})
 	}
 }
@@ -808,6 +834,9 @@ func (z *Tokenizer) readCommentOrRegExp(boundaryChars []byte) {
 			if c == '/' {
 				z.data.End = z.raw.End
 				return
+			}
+			if z.err == io.EOF {
+				panic("unterminated comment")
 			}
 		}
 	// RegExp
@@ -930,19 +959,13 @@ loop:
 	return false
 }
 
-func (z *Tokenizer) hasTag(s string) bool {
-loop:
+func (z *Tokenizer) hasAttribute(s string) bool {
 	for i := len(z.attr) - 1; i >= 0; i-- {
-
 		x := z.attr[i]
 		key := z.buf[x[0].Start:x[0].End]
-		for i := 0; i < len(key) && i < len(s); i++ {
-			c := key[i]
-			if c != s[i] {
-				continue loop
-			}
+		if string(key) == s {
+			return true
 		}
-		return true
 	}
 	return false
 }
@@ -952,12 +975,14 @@ loop:
 func (z *Tokenizer) readStartTag() TokenType {
 	z.readTag(true)
 	// Several tags flag the tokenizer's next token as raw.
-	c, raw := z.buf[z.data.Start], false
+	c, raw, noExpression := z.buf[z.data.Start], false, false
 	switch c {
 	case 'i':
 		raw = z.startTagIn("iframe")
 	case 'n':
 		raw = z.startTagIn("noembed", "noframes")
+	case 'm':
+		noExpression = z.startTagIn("math")
 	case 'p':
 		raw = z.startTagIn("plaintext")
 	case 's':
@@ -968,19 +993,24 @@ func (z *Tokenizer) readStartTag() TokenType {
 		raw = z.startTagIn("xmp")
 	}
 	if !raw {
-		raw = z.hasTag("data-astro-raw")
+		raw = z.hasAttribute("data-astro-raw")
+	}
+	if !raw {
+		raw = z.hasAttribute("is:raw")
 	}
 	if raw {
 		z.rawTag = string(z.buf[z.data.Start:z.data.End])
 	}
+	if noExpression {
+		z.noExpressionTag = string(z.buf[z.data.Start:z.data.End])
+		z.openBraceIsExpressionStart = false
+	}
 
 	// HTML void tags list: https://www.w3.org/TR/2011/WD-html-markup-20110113/syntax.html#syntax-elements
-	// Note: self-closing tags in SVG and MathML work differently; handled below
-	if z.startTagIn("area", "base", "br", "col", "command", "embed", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr") {
-		return SelfClosingTagToken
-	}
-	// Look for a self-closing token that’s not in the list above (e.g. "<svg><path/></svg>")
-	if z.err == nil && z.buf[z.raw.End-2] == '/' {
+	// Also look for a self-closing token that’s not in the list (e.g. "<svg><path/></svg>")
+	if z.startTagIn("area", "base", "br", "col", "command", "embed", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr") || z.err == nil && z.buf[z.raw.End-2] == '/' {
+		// Reset tokenizer state for self-closing elements
+		z.rawTag = ""
 		return SelfClosingTagToken
 	}
 
@@ -1033,6 +1063,7 @@ func (z *Tokenizer) readTag(saveAttr bool) {
 	z.attr = z.attr[:0]
 	z.attrTypes = z.attrTypes[:0]
 	z.attrExpressionStack = 0
+	z.attrTemplateLiteralStack = make([]int, 0)
 	z.nAttrReturned = 0
 	// Read the tag name and attribute key/value pairs.
 	z.readTagName()
@@ -1097,6 +1128,7 @@ func (z *Tokenizer) readTagAttrKey() {
 			z.pendingAttr[0].Start = z.raw.End
 			z.pendingAttrType = ShorthandAttribute
 			z.attrExpressionStack = 1
+			z.attrTemplateLiteralStack = append(z.attrTemplateLiteralStack, 0)
 			z.readTagAttrExpression()
 			pendingAttr := z.buf[z.pendingAttr[0].Start:]
 			if len(pendingAttr) > 3 {
@@ -1191,6 +1223,7 @@ func (z *Tokenizer) readTagAttrVal() {
 		z.pendingAttr[1].Start = z.raw.End
 		z.pendingAttrType = ExpressionAttribute
 		z.attrExpressionStack = 1
+		z.attrTemplateLiteralStack = append(z.attrTemplateLiteralStack, 0)
 		z.readTagAttrExpression()
 		z.pendingAttr[1].End = z.raw.End - 1
 		return
@@ -1218,6 +1251,16 @@ func (z *Tokenizer) readTagAttrVal() {
 	}
 }
 
+func (z *Tokenizer) allTagAttrExpressionsClosed() bool {
+	for i := len(z.attrTemplateLiteralStack); i > 0; i-- {
+		item := z.attrTemplateLiteralStack[i-1]
+		if item != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (z *Tokenizer) readTagAttrExpression() {
 	if z.err != nil {
 		return
@@ -1228,14 +1271,23 @@ func (z *Tokenizer) readTagAttrExpression() {
 			return
 		}
 		switch c {
+		case '`':
+			current := 0
+			if len(z.attrTemplateLiteralStack) >= z.attrExpressionStack {
+				current = z.attrTemplateLiteralStack[z.attrExpressionStack-1]
+			}
+			if current > 0 {
+				z.attrTemplateLiteralStack[z.attrExpressionStack-1]--
+			} else {
+				z.attrTemplateLiteralStack[z.attrExpressionStack-1]++
+			}
 		// Handle comments, strings within attrs
-		case '/', '"', '\'', '`':
+		case '/', '"', '\'':
+			if z.attrTemplateLiteralStack[z.attrExpressionStack-1] != 0 && c == '/' {
+				continue
+			}
 			end := z.data.End
 			if c == '/' {
-				next := z.readByte()
-				if next == '/' {
-					panic("Block comments (//) are not allowed inside of expressions")
-				}
 				// Also stop when we hit a '}' character (end of attribute expression)
 				z.readCommentOrRegExp([]byte{'}'})
 				// If we exit on a '}', ignore the final character here
@@ -1250,9 +1302,10 @@ func (z *Tokenizer) readTagAttrExpression() {
 			z.data.End = end
 		case '{':
 			z.attrExpressionStack++
+			z.attrTemplateLiteralStack = append(z.attrTemplateLiteralStack, 0)
 		case '}':
 			z.attrExpressionStack--
-			if z.attrExpressionStack == 0 {
+			if z.attrExpressionStack == 0 && z.allTagAttrExpressionsClosed() {
 				return
 			}
 		}
@@ -1260,7 +1313,7 @@ func (z *Tokenizer) readTagAttrExpression() {
 }
 
 func (z *Tokenizer) Loc() loc.Loc {
-	return loc.Loc{Start: z.raw.Start}
+	return loc.Loc{Start: z.data.Start}
 }
 
 // An expression boundary means the next tokens should be treated as a JS expression
@@ -1373,6 +1426,9 @@ loop:
 			break loop
 		}
 
+		// We're in an element again, so open braces should open an expression
+		z.openBraceIsExpressionStart = z.noExpressionTag == ""
+
 		// Empty <> Fragment start tag
 		if c == '>' {
 			if x := z.raw.End - len("<>"); z.raw.Start < x {
@@ -1385,8 +1441,6 @@ loop:
 			return z.tt
 		}
 
-		// We're in an element again, so open braces should open an expression
-		z.openBraceIsExpressionStart = true
 		switch {
 		case 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z':
 			tokenType = StartTagToken
@@ -1444,6 +1498,7 @@ loop:
 			if z.fm == FrontmatterInitial {
 				z.fm = FrontmatterClosed
 			}
+
 			c = z.readByte()
 			if z.err != nil {
 				break loop
@@ -1454,7 +1509,12 @@ loop:
 			}
 			if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
 				z.readTag(false)
-				if string(z.buf[z.data.Start:z.data.End]) == "Markdown" {
+				tagName := string(z.buf[z.data.Start:z.data.End])
+				if tagName == z.noExpressionTag {
+					// out of the tag block
+					z.noExpressionTag = ""
+				}
+				if tagName == "Markdown" {
 					z.m = MarkdownClosed
 				} else if z.m == MarkdownInnerTag {
 					z.m = MarkdownOpen
@@ -1480,7 +1540,6 @@ loop:
 			return z.tt
 		}
 	}
-
 	if z.raw.Start < z.raw.End {
 		// We're scanning Text, so open braces should be ignored
 		z.openBraceIsExpressionStart = false
@@ -1526,7 +1585,7 @@ frontmatter_loop:
 				z.dashCount = 0
 				z.data.End = z.raw.End
 				z.tt = FrontmatterFenceToken
-				z.openBraceIsExpressionStart = true
+				z.openBraceIsExpressionStart = z.noExpressionTag == ""
 				return z.tt
 			}
 		}
@@ -1577,7 +1636,7 @@ raw_with_expression_loop:
 		}
 
 		// handle string
-		if c == '\'' || c == '"' || c == '`' {
+		if c == '`' {
 			z.readString(c)
 			z.tt = TextToken
 			z.data.End = z.raw.End
@@ -1623,10 +1682,19 @@ expression_loop:
 
 		// JS Comment or RegExp
 		if c == '/' {
-			z.readCommentOrRegExp([]byte{})
-			z.tt = TextToken
+			boundaryChars := []byte{'{', '}', '\'', '"', '`'}
+			z.readCommentOrRegExp(boundaryChars)
+			// If we exit on a '}', ignore the final character here
+			lastChar := z.buf[z.data.End-1 : z.data.End][0]
+			for _, c := range boundaryChars {
+				if lastChar == c {
+					z.raw.End--
+				}
+			}
 			z.data.End = z.raw.End
+			z.tt = TextToken
 			return z.tt
+
 		}
 
 		// handle string
@@ -1682,7 +1750,7 @@ expression_loop:
 			}
 			z.expressionStack[len(z.expressionStack)-1]--
 			if z.expressionStack[len(z.expressionStack)-1] == -1 {
-				z.openBraceIsExpressionStart = true
+				z.openBraceIsExpressionStart = z.noExpressionTag == ""
 				z.expressionStack = z.expressionStack[0 : len(z.expressionStack)-1]
 				z.data.End = z.raw.End
 				z.tt = EndExpressionToken

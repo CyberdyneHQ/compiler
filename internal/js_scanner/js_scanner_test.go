@@ -1,7 +1,6 @@
 package js_scanner
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/withastro/compiler/internal/test_utils"
@@ -131,6 +130,35 @@ export async function getStaticPaths() {
 }; `,
 		},
 		{
+			name: "getStaticPaths with RegExp escape",
+			source: `export async function getStaticPaths() {
+  const pattern = /\.md$/g.test('value');
+}`,
+			want: `export async function getStaticPaths() {
+  const pattern = /\.md$/g.test('value');
+}`,
+		},
+		{
+			name: "getStaticPaths with divider",
+			source: `export async function getStaticPaths() {
+  const pattern = a / b;
+}`,
+			want: `export async function getStaticPaths() {
+  const pattern = a / b;
+}`,
+		},
+		{
+			name: "getStaticPaths with divider and following content",
+			source: `export async function getStaticPaths() {
+  const value = 1 / 2;
+}
+const { a } = Astro.props;`,
+			want: `export async function getStaticPaths() {
+  const value = 1 / 2;
+}
+`,
+		},
+		{
 			name: "multiple imports",
 			source: `import { a } from "a";
 import { b } from "b";
@@ -149,7 +177,7 @@ import { c } from "c";
 		{
 			name: "RegExp is not a comment",
 			source: `import { a } from "a";
-/import { b } from "b";
+/import \{ b \} from "b";/;
 import { c } from "c";`,
 			want: `import { a } from "a";
 `,
@@ -168,7 +196,7 @@ import { c } from "c";`,
 			got := tt.source[:split]
 			// compare to expected string, show diff if mismatch
 			if diff := test_utils.ANSIDiff(got, tt.want); diff != "" {
-				t.Error(fmt.Sprintf("mismatch (-want +got):\n%s", diff))
+				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

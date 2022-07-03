@@ -60,9 +60,19 @@ func TestBasic(t *testing.T) {
 			[]TokenType{SelfClosingTagToken},
 		},
 		{
+			"self-closing title",
+			`<title set:html={} /><div></div>`,
+			[]TokenType{SelfClosingTagToken, StartTagToken, EndTagToken},
+		},
+		{
 			"self-closing tag (no slash)",
 			`<img width="480" height="320">`,
 			[]TokenType{SelfClosingTagToken},
+		},
+		{
+			"text",
+			`Hello@`,
+			[]TokenType{TextToken},
 		},
 		{
 			"self-closing script",
@@ -85,6 +95,26 @@ func TestBasic(t *testing.T) {
 			[]TokenType{SelfClosingTagToken, StartTagToken, EndTagToken, SelfClosingTagToken},
 		},
 		{
+			"attribute with quoted template literal",
+			"<a :href=\"`/home`\">Home</a>",
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"No expressions inside math",
+			`<math>{test}</math>`,
+			[]TokenType{StartTagToken, TextToken, TextToken, TextToken, EndTagToken},
+		},
+		{
+			"No expressions inside math (complex)",
+			`<span><math xmlns="http://www.w3.org/1998/Math/MathML"><mo>4</mo><mi /><semantics><annotation encoding="application/x-tex">\sqrt {x}</annotation></semantics></math></span>`,
+			[]TokenType{StartTagToken, StartTagToken, StartTagToken, TextToken, EndTagToken, SelfClosingTagToken, StartTagToken, StartTagToken, TextToken, TextToken, TextToken, TextToken, EndTagToken, EndTagToken, EndTagToken, EndTagToken},
+		},
+		{
+			"Expression attributes allowed inside math",
+			`<math set:html={test} />`,
+			[]TokenType{SelfClosingTagToken},
+		},
+		{
 			"SVG (self-closing)",
 			`<svg><path/></svg>`,
 			[]TokenType{StartTagToken, SelfClosingTagToken, EndTagToken},
@@ -97,14 +127,14 @@ func TestBasic(t *testing.T) {
 		{
 			"SVG with style",
 			`<svg><style>
-		#fire {
-			fill: orange;
-			stroke: purple;
-		}
-		.wordmark {
-			fill: black;
-		}
-</style><path id="#fire" d="M0,0 M340,29"></path><path class="wordmark" d="M0,0 M340,29"></path></svg>`,
+				#fire {
+					fill: orange;
+					stroke: purple;
+				}
+				.wordmark {
+					fill: black;
+				}
+		</style><path id="#fire" d="M0,0 M340,29"></path><path class="wordmark" d="M0,0 M340,29"></path></svg>`,
 			[]TokenType{StartTagToken, StartTagToken, TextToken, EndTagToken, StartTagToken, EndTagToken, StartTagToken, EndTagToken, EndTagToken},
 		},
 		{
@@ -128,14 +158,44 @@ func TestBasic(t *testing.T) {
 			[]TokenType{StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken},
 		},
 		{
+			"expression with solidus inside element",
+			`<div>{ 16 / 4 }</div>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"expression with strings inside element",
+			`<div>{ "string" + 16 / 4 + "}" }</div>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, TextToken, TextToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"expression inside component",
+			`<Component>{items.map(item => <div>{item}</div>)}</Component>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"expression inside component with quoted attr",
+			`<Component a="b">{items.map(item => <div>{item}</div>)}</Component>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"expression inside component with expression attr",
+			`<Component data={data}>{items.map(item => <div>{item}</div>)}</Component>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"expression inside component with named expression attr",
+			`<Component named={data}>{items.map(item => <div>{item}</div>)}</Component>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
 			"expression with multiple returns",
 			`<div>{() => {
-	let generate = (input) => {
-		let a = () => { return; };
-		let b = () => { return; };
-		let c = () => { return; };
-	};
-}}</div>`,
+			let generate = (input) => {
+				let a = () => { return; };
+				let b = () => { return; };
+				let c = () => { return; };
+			};
+		}}</div>`,
 			[]TokenType{StartTagToken, StartExpressionToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, EndExpressionToken, EndTagToken},
 		},
 		{
@@ -146,6 +206,16 @@ func TestBasic(t *testing.T) {
 		{
 			"attribute expression with solidus",
 			`<div value={100 / 2} />`,
+			[]TokenType{SelfClosingTagToken},
+		},
+		{
+			"attribute expression with solidus inside template literal",
+			"<div value={attr ? `a/b` : \"c\"} />",
+			[]TokenType{SelfClosingTagToken},
+		},
+		{
+			"complex attribute expression",
+			"<div value={`${attr ? `a/b ${`c ${`d ${cool}`}`}` : \"d\"} awesome`} />",
 			[]TokenType{SelfClosingTagToken},
 		},
 		{
@@ -169,11 +239,21 @@ func TestBasic(t *testing.T) {
 			[]TokenType{StartTagToken, TextToken, EndTagToken},
 		},
 		{
+			"apostrophe within title",
+			`<title>Astro's</title>`,
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"quotes within title",
+			`<title>My Astro "Website"</title>`,
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
 			"textarea inside expression",
 			`
-				{bool && <textarea>It was a dark and stormy night...</textarea>}
-				{bool && <input>}
-			`,
+						{bool && <textarea>It was a dark and stormy night...</textarea>}
+						{bool && <input>}
+					`,
 			[]TokenType{StartExpressionToken, TextToken, StartTagToken, TextToken, EndTagToken, EndExpressionToken, TextToken, StartExpressionToken, TextToken, SelfClosingTagToken, EndExpressionToken, TextToken},
 		},
 		{
@@ -192,14 +272,44 @@ func TestBasic(t *testing.T) {
 			[]TokenType{StartTagToken, TextToken, EndTagToken},
 		},
 		{
+			"iframe allows attributes",
+			"<iframe src=\"https://google.com\"></iframe>",
+			[]TokenType{StartTagToken, EndTagToken},
+		},
+		{
 			"data-astro-raw allows children to be parsed as Text",
 			"<span data-astro-raw>function foo() { }</span>",
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"is:raw allows children to be parsed as Text",
+			"<span is:raw>function foo() { }</span>",
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"is:raw treats all children as raw text",
+			"<Fragment is:raw><ul></ue></Fragment>",
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"is:raw treats all children as raw text",
+			"<Fragment is:raw><ul></ue></Fragment>",
+			[]TokenType{StartTagToken, TextToken, EndTagToken},
+		},
+		{
+			"is:raw allows other attributes",
+			"<span data-raw={true} is:raw><%= Hi =%></span>",
 			[]TokenType{StartTagToken, TextToken, EndTagToken},
 		},
 		{
 			"Doesn't throw on other data attributes",
 			"<span data-foo></span>",
 			[]TokenType{StartTagToken, EndTagToken},
+		},
+		{
+			"Doesn't work if attr is named data",
+			"<span data>{Hello}</span>",
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken},
 		},
 		{
 			"Supports <style> inside of <svg>",
@@ -237,12 +347,27 @@ func TestBasic(t *testing.T) {
 			[]TokenType{StartTagToken, TextToken, EndTagToken},
 		},
 		{
+			"fragment shorthand in nested expression",
+			`<div>{x.map((x) => (<>{x ? "truthy" : "falsy"}</>))}</div>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"select with expression",
+			`<select>{[1, 2, 3].map(num => <option>{num}</option>)}</select>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken},
+		},
+		{
+			"select with expression",
+			`<select>{[1, 2, 3].map(num => <option>{num}</option>)}</select><div>Hello</div>`,
+			[]TokenType{StartTagToken, StartExpressionToken, TextToken, StartTagToken, StartExpressionToken, TextToken, EndExpressionToken, EndTagToken, TextToken, EndExpressionToken, EndTagToken, StartTagToken, TextToken, EndTagToken},
+		},
+		{
 			"Markdown codeblock",
 			fmt.Sprintf(`<Markdown>
-%s%s%s
-open brace {
-%s%s%s
-</Markdown>`, "`", "`", "`", "`", "`", "`"),
+		%s%s%s
+		open brace {
+		%s%s%s
+		</Markdown>`, "`", "`", "`", "`", "`", "`"),
 			[]TokenType{StartTagToken, TextToken, TextToken, TextToken, TextToken, EndTagToken},
 		},
 		{
@@ -268,9 +393,19 @@ to use the longhand Fragment syntax:
   <Fragment slot="named">`,
 		},
 		{
-			"block comment in attribute",
-			`<div {// uhh} />`,
-			`Block comments (//) are not allowed inside of expressions`,
+			"unterminated comment block",
+			"{/*",
+			"unterminated comment",
+		},
+		{
+			"unterminated comment block in expression",
+			"<div>{/*}</div>",
+			"unterminated comment",
+		},
+		{
+			"unterminated comment block in attribute list",
+			`<div a="1" {/* b="2" />`,
+			"unterminated comment",
 		},
 	}
 	runPanicTest(t, Panics)
@@ -429,6 +564,16 @@ const RegExp = /---< > > { }; import thing from "thing"; /
 ---
 			{html}`,
 			[]TokenType{FrontmatterFenceToken, TextToken, TextToken, FrontmatterFenceToken, TextToken, StartExpressionToken, TextToken, EndExpressionToken},
+		},
+		{
+			"RegExp with Escape",
+			`---
+export async function getStaticPaths() {
+  const pattern = /\.md$/g;
+}
+---
+<div />`,
+			[]TokenType{FrontmatterFenceToken, TextToken, TextToken, TextToken, TextToken, TextToken, TextToken, FrontmatterFenceToken, SelfClosingTagToken},
 		},
 		{
 			"textarea",
@@ -640,6 +785,16 @@ func TestAttributes(t *testing.T) {
 			[]AttributeType{QuotedAttribute},
 		},
 		{
+			"expression with template literal",
+			"<div a=\"`value`\" />",
+			[]AttributeType{QuotedAttribute},
+		},
+		{
+			"expression with template literal interpolation",
+			"<div a=\"`${value}`\" />",
+			[]AttributeType{QuotedAttribute},
+		},
+		{
 			"shorthand",
 			`<div {value} />`,
 			[]AttributeType{ShorthandAttribute},
@@ -677,6 +832,31 @@ func TestAttributes(t *testing.T) {
 		{
 			"expression with quoted braces",
 			`<div value={ "{" } />`,
+			[]AttributeType{ExpressionAttribute},
+		},
+		{
+			"attribute expression with solidus inside template literal",
+			"<div value={attr ? `a/b` : \"c\"} />",
+			[]AttributeType{ExpressionAttribute},
+		},
+		{
+			"attribute expression with solidus inside template literal with trailing text",
+			"<div value={`${attr ? `a/b` : \"c\"} awesome`} />",
+			[]AttributeType{ExpressionAttribute},
+		},
+		{
+			"iframe allows attributes",
+			"<iframe src=\"https://google.com\"></iframe>",
+			[]AttributeType{QuotedAttribute},
+		},
+		{
+			"shorthand attribute with comment",
+			"<div {/* a comment */ value} />",
+			[]AttributeType{ShorthandAttribute},
+		},
+		{
+			"expression with comment",
+			"<div a={/* a comment */ value} />",
 			[]AttributeType{ExpressionAttribute},
 		},
 	}
@@ -718,7 +898,7 @@ func runPanicTest(t *testing.T, suite []TokenPanicTest) {
 				}
 
 				if diff := test_utils.ANSIDiff(test_utils.Dedent(r.(string)), test_utils.Dedent(tt.message)); diff != "" {
-					t.Error(fmt.Sprintf("mismatch (-want +got):\n%s", diff))
+					t.Errorf("mismatch (-want +got):\n%s", diff)
 				}
 			}()
 			var next TokenType

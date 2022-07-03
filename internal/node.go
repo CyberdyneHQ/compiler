@@ -30,6 +30,29 @@ const (
 	ExpressionNode
 )
 
+func (t NodeType) String() string {
+	switch t {
+	case ErrorNode:
+		return "error"
+	case TextNode:
+		return "text"
+	case DocumentNode:
+		return "root"
+	case ElementNode:
+		return "element"
+	case CommentNode:
+		return "comment"
+	case DoctypeNode:
+		return "doctype"
+	case FrontmatterNode:
+		return "frontmatter"
+	case ExpressionNode:
+		return "expression"
+	default:
+		return ""
+	}
+}
+
 // Used as an Attribute Key to mark implicit nodes
 const ImplicitNodeMarker = "\x00implicit"
 
@@ -38,6 +61,12 @@ const ImplicitNodeMarker = "\x00implicit"
 // to prevent formatting from "leaking" into applet, object, marquee,
 // template, td, th, and caption elements".
 var scopeMarker = Node{Type: scopeMarkerNode}
+
+type HydratedComponentMetadata struct {
+	ExportName   string
+	Specifier    string
+	ResolvedPath string
+}
 
 // A Node consists of a NodeType and some Data (tag name for element nodes,
 // content for text) and are part of a tree of Nodes. Element nodes may also
@@ -57,10 +86,12 @@ type Node struct {
 	Parent, FirstChild, LastChild, PrevSibling, NextSibling *Node
 
 	// These are only accessible from the document root Node
-	Styles, Scripts      []*Node
-	HydratedComponents   []*Node
-	ClientOnlyComponents []*Node
-	HydrationDirectives  map[string]bool
+	Styles, Scripts          []*Node
+	HydratedComponentNodes   []*Node
+	HydratedComponents       []*HydratedComponentMetadata
+	ClientOnlyComponentNodes []*Node
+	ClientOnlyComponents     []*HydratedComponentMetadata
+	HydrationDirectives      map[string]bool
 
 	Type      NodeType
 	DataAtom  atom.Atom
@@ -143,6 +174,20 @@ func (n *Node) RemoveChild(c *Node) {
 	c.NextSibling = nil
 }
 
+func (n *Node) Closest(check func(*Node) bool) *Node {
+	p := n
+	for {
+		if check(p) {
+			return p
+		}
+		p = p.Parent
+		if p == nil {
+			break
+		}
+	}
+	return nil
+}
+
 func GetAttribute(n *Node, key string) *Attribute {
 	for _, attr := range n.Attr {
 		if attr.Key == key {
@@ -150,6 +195,15 @@ func GetAttribute(n *Node, key string) *Attribute {
 		}
 	}
 	return nil
+}
+
+func (n *Node) RemoveAttribute(key string) {
+	for i, attr := range n.Attr {
+		if attr.Key == key {
+			n.Attr = append(n.Attr[:i], n.Attr[i+1:]...)
+			return
+		}
+	}
 }
 
 // reparentChildren reparents all of src's child nodes to dst.

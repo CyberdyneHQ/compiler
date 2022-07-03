@@ -16,6 +16,14 @@ func hasTruthyAttr(n *astro.Node, key string) bool {
 	return false
 }
 
+func HasSetDirective(n *astro.Node) bool {
+	return HasAttr(n, "set:html") || HasAttr(n, "set:text")
+}
+
+func HasInlineDirective(n *astro.Node) bool {
+	return HasAttr(n, "is:inline")
+}
+
 func HasAttr(n *astro.Node, key string) bool {
 	for _, attr := range n.Attr {
 		if attr.Key == key {
@@ -31,17 +39,6 @@ func IsImplictNode(n *astro.Node) bool {
 
 func IsImplictNodeMarker(attr astro.Attribute) bool {
 	return attr.Key == astro.ImplicitNodeMarker
-}
-
-func childCount(n *astro.Node) int {
-	var i int
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if IsImplictNode(c) {
-			continue
-		}
-		i++
-	}
-	return i
 }
 
 func GetQuotedAttr(n *astro.Node, key string) string {

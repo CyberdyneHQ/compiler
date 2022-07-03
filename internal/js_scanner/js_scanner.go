@@ -1,6 +1,7 @@
 package js_scanner
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/tdewolff/parse/v2"
@@ -23,12 +24,11 @@ func FindRenderBody(source []byte) int {
 	// Let's lex the script until we find what we need!
 	for {
 		token, value := l.Next()
+		if token == js.DivToken || token == js.DivEqToken {
+			token, value = l.RegExp()
+		}
 		openPairs := pairs['{'] > 0 || pairs['('] > 0 || pairs['['] > 0
-
 		if token == js.ErrorToken {
-			if l.Err() != io.EOF {
-				return -1
-			}
 			break
 		}
 
@@ -46,6 +46,12 @@ func FindRenderBody(source []byte) int {
 			foundAssertion := false
 			for {
 				next, nextValue := l.Next()
+				if token == js.DivToken || token == js.DivEqToken {
+					next, nextValue = l.RegExp()
+				}
+				if next == js.ErrorToken {
+					break
+				}
 				i += len(nextValue)
 				if next == js.StringToken {
 					foundSpecifier = true
@@ -79,6 +85,12 @@ func FindRenderBody(source []byte) int {
 			i += len(value)
 			for {
 				next, nextValue := l.Next()
+				if next == js.DivToken || next == js.DivEqToken {
+					next, nextValue = l.RegExp()
+				}
+				if next == js.ErrorToken {
+					break
+				}
 				i += len(nextValue)
 				if js.IsIdentifier(next) {
 					foundIdentifier = true
@@ -134,6 +146,7 @@ func FindRenderBody(source []byte) int {
 
 func HasExports(source []byte) bool {
 	l := js.NewLexer(parse.NewInputBytes(source))
+	var prevToken js.TokenType
 	for {
 		token, _ := l.Next()
 		if token == js.ErrorToken {
@@ -141,8 +154,10 @@ func HasExports(source []byte) bool {
 			return false
 		}
 		if token == js.ExportToken {
+			fmt.Println(prevToken, token)
 			return true
 		}
+		prevToken = token
 	}
 }
 

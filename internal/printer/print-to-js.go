@@ -5,7 +5,6 @@
 package printer
 
 import (
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -59,11 +58,12 @@ func PrintToJSFragment(sourcetext string, n *Node, cssLen int, opts transform.Tr
 }
 
 type RenderOptions struct {
-	isRoot       bool
-	isExpression bool
-	depth        int
-	cssLen       int
-	opts         transform.TransformOptions
+	isRoot           bool
+	isExpression     bool
+	depth            int
+	cssLen           int
+	opts             transform.TransformOptions
+	printedMaybeHead *bool
 }
 
 type ExtractedStatement struct {
@@ -72,18 +72,31 @@ type ExtractedStatement struct {
 }
 
 func printToJs(p *printer, n *Node, cssLen int, opts transform.TransformOptions) PrintResult {
+	printedMaybeHead := false
 	render1(p, n, RenderOptions{
-		cssLen:       cssLen,
-		isRoot:       true,
-		isExpression: false,
-		depth:        0,
-		opts:         opts,
+		cssLen:           cssLen,
+		isRoot:           true,
+		isExpression:     false,
+		depth:            0,
+		opts:             opts,
+		printedMaybeHead: &printedMaybeHead,
 	})
 
 	return PrintResult{
 		Output:         p.output,
 		SourceMapChunk: p.builder.GenerateChunk(p.output),
 	}
+}
+
+const whitespace = " \t\r\n\f"
+
+// Returns true if the expression only contains a comment block (e.g. {/* a comment */})
+func expressionOnlyHasCommentBlock(n *Node) bool {
+	return n.FirstChild.NextSibling == nil &&
+		n.FirstChild.Type == TextNode &&
+		// removeComments iterates over text and most of the time we won't be parsing comments so lets check if text starts with /* before iterating
+		strings.HasPrefix(strings.TrimLeft(n.FirstChild.Data, whitespace), "/*") &&
+		len(removeComments(n.FirstChild.Data)) == 0
 }
 
 func render1(p *printer, n *Node, opts RenderOptions) {
@@ -98,16 +111,16 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			render1(p, c, RenderOptions{
-				isRoot:       false,
-				isExpression: false,
-				depth:        depth + 1,
-				opts:         opts.opts,
+				isRoot:           false,
+				isExpression:     false,
+				depth:            depth + 1,
+				opts:             opts.opts,
+				printedMaybeHead: opts.printedMaybeHead,
 			})
 		}
 
 		p.printReturnClose()
-		// TODO: use proper component name
-		p.printFuncSuffix("$$Component")
+		p.printFuncSuffix(opts.opts)
 		return
 	}
 
@@ -135,7 +148,7 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 					preprocessed := js_scanner.HoistExports([]byte(c.Data))
 
 					// 1. After imports put in the top-level Astro.
-					p.printTopLevelAstro()
+					p.printTopLevelAstro(opts.opts)
 
 					if len(preprocessed.Hoisted) > 0 {
 						for _, hoisted := range preprocessed.Hoisted {
@@ -149,17 +162,12 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 					// 3. The metadata object
 					p.printComponentMetadata(n.Parent, opts.opts, []byte(c.Data))
 
-					// TODO: use the proper component name
-					p.printFuncPrelude("$$Component")
+					p.printFuncPrelude(opts.opts)
 				} else {
 					importStatements := c.Data[0:renderBodyStart]
 					content := c.Data[renderBodyStart:]
 					preprocessed := js_scanner.HoistExports([]byte(content))
-					renderBody := preprocessed.Body
 
-					if js_scanner.HasExports(renderBody) {
-						panic(errors.New("Export statements must be placed at the top of .astro files!"))
-					}
 					if len(c.Loc) > 0 {
 						p.addSourceMapping(c.Loc[0])
 					}
@@ -168,7 +176,7 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 					// 1. Component imports, if any exist.
 					p.printComponentMetadata(n.Parent, opts.opts, []byte(importStatements))
 					// 2. Top-level Astro global.
-					p.printTopLevelAstro()
+					p.printTopLevelAstro(opts.opts)
 
 					if len(preprocessed.Hoisted) > 0 {
 						for _, hoisted := range preprocessed.Hoisted {
@@ -176,8 +184,7 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 						}
 					}
 
-					// TODO: use the proper component name
-					p.printFuncPrelude("$$Component")
+					p.printFuncPrelude(opts.opts)
 					if len(c.Loc) > 0 {
 						p.addSourceMapping(loc.Loc{Start: c.Loc[0].Start + renderBodyStart})
 					}
@@ -186,20 +193,20 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 
 				// Print empty just to ensure a newline
 				p.println("")
-				if !opts.opts.StaticExtraction && len(n.Parent.Styles) > 0 {
+				if len(n.Parent.Styles) > 0 {
 					p.println("const STYLES = [")
 					for _, style := range n.Parent.Styles {
-						p.printStyleOrScript(style)
+						p.printStyleOrScript(opts, style)
 					}
 					p.println("];")
 					p.addNilSourceMapping()
 					p.println(fmt.Sprintf("for (const STYLE of STYLES) %s.styles.add(STYLE);", RESULT))
 				}
 
-				if len(n.Parent.Scripts) > 0 {
+				if !opts.opts.StaticExtraction && len(n.Parent.Scripts) > 0 {
 					p.println("const SCRIPTS = [")
 					for _, script := range n.Parent.Scripts {
-						p.printStyleOrScript(script)
+						p.printStyleOrScript(opts, script)
 					}
 					p.println("];")
 					p.addNilSourceMapping()
@@ -209,39 +216,41 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				p.printReturnOpen()
 			} else {
 				render1(p, c, RenderOptions{
-					isRoot:       false,
-					isExpression: true,
-					depth:        depth + 1,
-					opts:         opts.opts,
+					isRoot:           false,
+					isExpression:     true,
+					depth:            depth + 1,
+					opts:             opts.opts,
+					printedMaybeHead: opts.printedMaybeHead,
 				})
-				p.addSourceMapping(loc.Loc{Start: n.Loc[1].Start - 3})
+				if len(n.Loc) > 1 {
+					p.addSourceMapping(loc.Loc{Start: n.Loc[1].Start - 3})
+				}
 			}
 		}
 		return
 	} else if !p.hasFuncPrelude {
 		p.printComponentMetadata(n.Parent, opts.opts, []byte{})
-		p.printTopLevelAstro()
+		p.printTopLevelAstro(opts.opts)
 
 		// Render func prelude. Will only run for the first non-frontmatter node
-		// TODO: use the proper component name
-		p.printFuncPrelude("$$Component")
+		p.printFuncPrelude(opts.opts)
 		// This just ensures a newline
 		p.println("")
 
 		// If we haven't printed the funcPrelude but we do have Styles/Scripts, we need to print them!
-		if !opts.opts.StaticExtraction && len(n.Parent.Styles) > 0 {
+		if len(n.Parent.Styles) > 0 {
 			p.println("const STYLES = [")
 			for _, style := range n.Parent.Styles {
-				p.printStyleOrScript(style)
+				p.printStyleOrScript(opts, style)
 			}
 			p.println("];")
 			p.addNilSourceMapping()
 			p.println(fmt.Sprintf("for (const STYLE of STYLES) %s.styles.add(STYLE);", RESULT))
 		}
-		if len(n.Parent.Scripts) > 0 {
+		if !opts.opts.StaticExtraction && len(n.Parent.Scripts) > 0 {
 			p.println("const SCRIPTS = [")
 			for _, script := range n.Parent.Scripts {
-				p.printStyleOrScript(script)
+				p.printStyleOrScript(opts, script)
 			}
 			p.println("];")
 			p.addNilSourceMapping()
@@ -303,10 +312,13 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 
 	// Tip! Comment this block out to debug expressions
 	if n.Expression {
-		if n.FirstChild != nil {
-			p.print("${")
-		} else {
+		if n.FirstChild == nil {
 			p.print("${(void 0)")
+		} else if expressionOnlyHasCommentBlock(n) {
+			// we do not print expressions that only contain comment blocks
+			return
+		} else {
+			p.print("${")
 		}
 
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -319,10 +331,11 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				p.printTemplateLiteralOpen()
 			}
 			render1(p, c, RenderOptions{
-				isRoot:       false,
-				isExpression: true,
-				depth:        depth + 1,
-				opts:         opts.opts,
+				isRoot:           false,
+				isExpression:     true,
+				depth:            depth + 1,
+				opts:             opts.opts,
+				printedMaybeHead: opts.printedMaybeHead,
 			})
 			if c.NextSibling == nil || c.NextSibling.Type == TextNode {
 				p.printTemplateLiteralClose()
@@ -339,6 +352,15 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 	isComponent := isFragment || n.Component || n.CustomElement
 	isClientOnly := isComponent && transform.HasAttr(n, "client:only")
 	isSlot := n.DataAtom == atom.Slot
+	isImplicit := false
+	for _, a := range n.Attr {
+		if isSlot && a.Key == "is:inline" {
+			isSlot = false
+		}
+		if transform.IsImplictNodeMarker(a) {
+			isImplicit = true
+		}
+	}
 
 	p.addSourceMapping(n.Loc[0])
 	switch true {
@@ -348,9 +370,21 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 		p.print(fmt.Sprintf("${%s(%s,'%s',", RENDER_COMPONENT, RESULT, n.Data))
 	case isSlot:
 		p.print(fmt.Sprintf("${%s(%s,%s[", RENDER_SLOT, RESULT, SLOTS))
+	case isImplicit:
+		// do nothing
 	default:
+		// Before the first non-head element, inject $$maybeRender($$result)
+		// This is for pages that do not contain an explicit head element
+		switch n.DataAtom {
+		case atom.Html, atom.Head, atom.Base, atom.Basefont, atom.Bgsound, atom.Link, atom.Meta, atom.Noframes, atom.Script, atom.Style, atom.Template, atom.Title:
+			break
+		default:
+			if !*opts.printedMaybeHead {
+				*opts.printedMaybeHead = true
+				p.printMaybeRenderHead()
+			}
+		}
 		p.print("<")
-
 	}
 
 	p.addSourceMapping(loc.Loc{Start: n.Loc[0].Start + 1})
@@ -361,12 +395,15 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 		p.print("null")
 	case !isSlot && n.CustomElement:
 		p.print(fmt.Sprintf("'%s'", n.Data))
-	case !isSlot:
+	case !isSlot && !isImplicit:
+		// Print the tag name
 		p.print(n.Data)
 	}
 
 	p.addSourceMapping(n.Loc[0])
-	if isComponent {
+	if isImplicit {
+		// do nothing
+	} else if isComponent {
 		p.print(",")
 		p.printAttributesToObject(n)
 	} else if isSlot {
@@ -386,9 +423,6 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				default:
 					panic("slot[name] must be a static string")
 				}
-				// if i != len(n.Attr)-1 {
-				// 	p.print("")
-				// }
 			}
 			if !slotted {
 				p.print(`"default"`)
@@ -397,19 +431,19 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 		p.print(`]`)
 	} else {
 		for _, a := range n.Attr {
-			if transform.IsImplictNodeMarker(a) {
+			if transform.IsImplictNodeMarker(a) || a.Key == "is:inline" {
 				continue
 			}
 			if a.Key == "slot" {
-				if !(n.Parent.Component || n.Parent.CustomElement) {
-					panic(`Element with a slot='...' attribute must be a child of a component or a descendant of a custom element`)
+				if n.Parent.Component {
+					continue
 				}
-				if n.Parent.CustomElement {
-					p.printAttribute(a)
-					p.addSourceMapping(n.Loc[0])
-				}
+				// Note: if we encounter "slot" NOT inside a component, that's fine
+				// These should be perserved in the output
+				p.printAttribute(a, n)
+				p.addSourceMapping(n.Loc[0])
 			} else {
-				p.printAttribute(a)
+				p.printAttribute(a, n)
 				p.addSourceMapping(n.Loc[0])
 			}
 		}
@@ -444,9 +478,11 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				p.print(escapeText(c.Data))
 			} else {
 				render1(p, c, RenderOptions{
-					isRoot: false,
-					depth:  depth + 1,
-					opts:   opts.opts,
+					isRoot:           false,
+					isExpression:     opts.isExpression,
+					depth:            depth + 1,
+					opts:             opts.opts,
+					printedMaybeHead: opts.printedMaybeHead,
 				})
 			}
 		}
@@ -475,10 +511,11 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				p.printTemplateLiteralOpen()
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
 					render1(p, c, RenderOptions{
-						isRoot:       false,
-						isExpression: opts.isExpression,
-						depth:        depth + 1,
-						opts:         opts.opts,
+						isRoot:           false,
+						isExpression:     opts.isExpression,
+						depth:            depth + 1,
+						opts:             opts.opts,
+						printedMaybeHead: opts.printedMaybeHead,
 					})
 				}
 				p.printTemplateLiteralClose()
@@ -517,10 +554,11 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 					p.printTemplateLiteralOpen()
 					for _, child := range children {
 						render1(p, child, RenderOptions{
-							isRoot:       false,
-							isExpression: opts.isExpression,
-							depth:        depth + 1,
-							opts:         opts.opts,
+							isRoot:           false,
+							isExpression:     opts.isExpression,
+							depth:            depth + 1,
+							opts:             opts.opts,
+							printedMaybeHead: opts.printedMaybeHead,
 						})
 					}
 					p.printTemplateLiteralClose()
@@ -532,20 +570,22 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 				p.printTemplateLiteralOpen()
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
 					render1(p, c, RenderOptions{
-						isRoot:       false,
-						isExpression: opts.isExpression,
-						depth:        depth + 1,
-						opts:         opts.opts,
+						isRoot:           false,
+						isExpression:     opts.isExpression,
+						depth:            depth + 1,
+						opts:             opts.opts,
+						printedMaybeHead: opts.printedMaybeHead,
 					})
 				}
 				p.printTemplateLiteralClose()
 			default:
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
 					render1(p, c, RenderOptions{
-						isRoot:       false,
-						isExpression: opts.isExpression,
-						depth:        depth + 1,
-						opts:         opts.opts,
+						isRoot:           false,
+						isExpression:     opts.isExpression,
+						depth:            depth + 1,
+						opts:             opts.opts,
+						printedMaybeHead: opts.printedMaybeHead,
 					})
 				}
 			}
@@ -559,7 +599,11 @@ func render1(p *printer, n *Node, opts RenderOptions) {
 	}
 	if isComponent || isSlot {
 		p.print(")}")
-	} else {
+	} else if !isImplicit {
+		if n.DataAtom == atom.Head {
+			*opts.printedMaybeHead = true
+			p.printRenderHead()
+		}
 		p.print(`</` + n.Data + `>`)
 	}
 }
